@@ -11,12 +11,11 @@ class Block:
     def assign (self, prev_hash, token_ids : list[int]):
         self.token_ids = token_ids
         self.hash = hash((prev_hash, tuple(token_ids)))
-        self.ref_count += 1
 
     def reset (self):
         self.token_ids = [] 
         self.hash = -1
-        self.ref_count -= 1
+        self.ref_count = 1
 
 class BlockManager:
     def __init__ (self, block_size : int, num_blocks : int):
@@ -35,50 +34,67 @@ class BlockManager:
             h = hash((h, tuple(token_ids)))
             if h not in self.prefix_cache:
                 break
-            
+
             block_id = self.prefix_cache[h]
+
+            if token_ids != self.block_list[block_id].token_ids:
+                break;
+
             num_cached += 1
 
             block = self.block_list[block_id]
             if block.ref_count == 0:
                 # means block is unused, but exists in prefix cache. resurrect 
                 num_free_blocks += 1
-
-            block.ref_count += 1
             
-            num_free_blocks += seq.num_blocks() - num_cached
-            return num_cached
+        num_free_blocks += seq.num_blocks() - num_cached
 
-    def alloc_block(self, token_ids : list[int]):
-        block_id = self.free_blocks.pop()
-        del self.prefix_cache[block_id]
+        if (len(self.free_blocks) < num_free_blocks):
+            return -1
+
+        return num_cached
+
+    def alloc_block(self):
+        block_id = self.free_blocks.popleft()
+        block = self.block_list[block_id]
+        if block.hash != -1 and self.prefix_cache.get(block.hash) == block_id:
+            del self.prefix_cache[block.hash]
+        block.reset()
         return block_id
 
     def allocate(self, seq : Sequence):
         num_cached = self.can_allocate(seq)
         h = -1
-        if not num_cached:
-            return 
 
         for i in range(num_cached):
             token_ids = seq.block(i)
             h = hash((h, tuple(token_ids)))
+            block_id = self.prefix_cache[h]
+            block = self.block_list[block_id]
+
+            if block.ref_count == 0:
+                # resurrect!
+                self.free_blocks.remove(block)
+
+            block.ref_count += 1
 
             seq.block_table.append(self.prefix_cache[h])
 
         for i in range(num_cached, seq.num_blocks()):
-            seq.block_table.append(self.alloc_block(token_ids))
+            seq.block_table.append(self.alloc_block())
 
+        seq.num_cached_tokens = num_cached * self.block_size
         return
 
     def deallocate(self, seq: Sequence):
         # iterate in reverse order to not break hash invariant (think why!)
-        for i in range(seq.num_blocks(), -1, -1):
-            block = seq.block_table[i]
+        for block_id in reversed(seq.block_table):
+            block = self.block_list[block_id]
             block.ref_count -= 1
 
             if block.ref_count == 0:
-                self.free_blocks.append(seq.block_table[i])
+                self.free_blocks.append(seq.block_table[block_id])
+
         seq.num_cached_tokens = 0
         seq.block_table = []
 
