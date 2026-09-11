@@ -63,7 +63,11 @@ class BlockManager:
         return block_id
 
     def allocate(self, seq : Sequence):
+        assert not seq.block_table, 'sequence already holds blocks'
         num_cached = self.can_allocate(seq)
+        if num_cached == -1:
+            # not enough free blocks; caller must not schedule this sequence
+            return -1
         h = -1
 
         for i in range(num_cached):
@@ -74,7 +78,7 @@ class BlockManager:
 
             if block.ref_count == 0:
                 # resurrect!
-                self.free_blocks.remove(block)
+                self.free_blocks.remove(block_id)
 
             block.ref_count += 1
 
@@ -84,7 +88,7 @@ class BlockManager:
             seq.block_table.append(self.alloc_block())
 
         seq.num_cached_tokens = num_cached * self.block_size
-        return
+        return num_cached
 
     def deallocate(self, seq: Sequence):
         # iterate in reverse order to not break hash invariant (think why!)
@@ -93,7 +97,7 @@ class BlockManager:
             block.ref_count -= 1
 
             if block.ref_count == 0:
-                self.free_blocks.append(seq.block_table[block_id])
+                self.free_blocks.append(block_id)
 
         seq.num_cached_tokens = 0
         seq.block_table = []
