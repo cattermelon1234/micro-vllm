@@ -98,6 +98,11 @@ class BlockManager:
         seq.num_cached_tokens = 0
         seq.block_table = []
 
+    def can_append(self, seq: Sequence):
+        needs_block = seq.num_tokens % self.block_size == 1
+        return len(self.free_blocks) >= (1 if needs_block else 0)
+
+
 
 
 
