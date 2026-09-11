@@ -13,7 +13,7 @@ class Scheduler:
         self.block_manager = BlockManager(config.block_size, config.num_blocks)
     
     def is_finished(self):
-        return not self.waiting and not self.running
+        return (not self.waiting and not self.running)
 
     def add(self, seq : Sequence):
         self.waiting.append(seq)
@@ -26,32 +26,48 @@ class Scheduler:
             return ([], False)
         num_tokens = 0
         batch : list[Sequence] = []
+        prefill = True
 
         # schedule a prefill batch
         if self.waiting:
             while (len(batch) < self.max_seq and num_tokens < self.max_tokens_per_batch):
                 seq = self.waiting[0]
-                while not self.block_manager.can_allocate(seq):
-                    victim = self.running.popleft()
+                while self.running and self.block_manager.can_allocate(seq) == -1:
+                    victim = self.running.pop()
                     self.preempt(victim)
 
                 self.block_manager.allocate(seq)
                 self.waiting.popleft()
                 num_tokens += seq.num_tokens
                 batch.append(seq)
+                self.running.append(seq)
 
+                # calculate num scheduled tokens
+                remaining = seq.num_tokens - seq.num_cached_tokens
+                budget = self.max_tokens_per_batch - num_tokens
+
+                num_scheduled = min(remaining, budget)
+                seq.num_scheduled_tokens = num_scheduled
 
         # construct a decode batch
         else:
+            prefill = True
             while (len(batch) < self.max_seq and num_tokens < self.max_tokens_per_batch):
                 seq = self.running[0]
                 if self.block_manager.can_append(seq):
                     self.block_manager.try_append(seq)
-                    self.waiting.popleft()
+                    self.running.popleft()
                     num_tokens += seq.num_tokens
                     batch.append(seq)
+                    self.running.append(seq)
 
-        return batch, True
+                    seq.num_scheduled_tokens = 1
+                else:
+                    # preempt running seq if not enough space for a decode
+                    self.preempt(seq)
+                    continue
+
+        return batch, prefill
             
 
     """
@@ -68,13 +84,18 @@ class Scheduler:
     """
     def postprocess(self, seqs : list[Sequence], is_prefill : bool):
         for seq in seqs:
-            seq.num_scheduled_tokens = 0
-            self.block_manager.publish_blocks(seq)
+            # check for chunked prefill, (don't publish kv since incomplete)
             if is_prefill and seq.num_cached_tokens < seq.num_tokens:
                 continue
-            if (not seq.ignore_eos and seq.last_token == self.eos) or seq.num_completion_tokens == seq.max_tokens:
+
+            self.block_manager.publish_blocks(seq)
+            seq.num_cached_tokens += seq.num_scheduled_tokens
+
+            if (not seq.ignore_eos and seq.last_token == self.eos) or seq.num_completion_tokens() == seq.max_tokens:
                 seq.status = Status.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)
+            seq.num_scheduled_tokens = 0
+
 
 

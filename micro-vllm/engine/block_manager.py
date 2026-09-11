@@ -107,21 +107,6 @@ class BlockManager:
         return len(self.free_blocks) >= (1 if needs_block else 0)    # return true/false if enough free blocks
 
     def try_append(self, seq: Sequence):
-        # If the most recently appended token completed a block,
-        # finalize/cache that block.
-        if seq.num_tokens % self.block_size == 0:
-            idx = seq.num_tokens // self.block_size - 1
-            block_id = seq.block_table[idx]
-            block = self.block_list[block_id]
-
-            prev_hash = -1
-            if idx > 0:
-                prev_block_id = seq.block_table[idx - 1]
-                prev_hash = self.block_list[prev_block_id].hash
-
-            block.assign(prev_hash, seq.block(idx))
-            self.prefix_cache[block.hash] = block_id
-
         # If we've just started a new block, allocate space for it.
         if seq.num_tokens % self.block_size == 1:
             # only if allocate() hasn't already provided this block
