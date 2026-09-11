@@ -24,60 +24,87 @@ class Scheduler:
     def schedule(self) -> tuple[list[Sequence], bool]:
         if self.is_finished():
             return ([], False)
+
         num_tokens = 0
         batch : list[Sequence] = []
-        prefill = True
 
-        # schedule a prefill batch
-        if self.waiting:
-            while (len(batch) < self.max_seq and num_tokens < self.max_tokens_per_batch):
-                seq = self.waiting[0]
-                while self.running and self.block_manager.can_allocate(seq) == -1:
-                    victim = self.running.pop()
-                    self.preempt(victim)
+        # prefill
+        # runs first, so new requests take priority over decoding ones
+        while self.waiting and len(batch) < self.max_seq:
+            seq = self.waiting[0]
 
-                cached_tokens = self.block_manager.allocate(seq)
+            budget = self.max_tokens_per_batch - num_tokens
+            if budget == 0:
+                break
 
-                if cached_tokens == -1:
+            # only alloc blocks if block table doesnt exist to avoid duplication
+            if not seq.block_table:
+                num_cached = self.block_manager.can_allocate(seq)
+                if num_cached == -1:
+                    # no more room, stop. we could evict, but that leads to issues
+                    # for prefill evictions
+                    break
+                remaining = seq.num_tokens - num_cached * self.block_manager.block_size
+            else:
+                remaining = seq.num_tokens - seq.num_cached_tokens
+
+            # only chunk a prompt that cannot fit in a whole empty batch.
+            # anything else waits one step and goes through in a single pass,
+            # instead of being split across two for no benefit
+            if budget < remaining and batch:
+                break
+
+            # alloc blocks only once every break above is cleared, so we never
+            # reserve memory for a sequence we then decline to schedule
+            if not seq.block_table:
+                self.block_manager.allocate(seq)
+
+            seq.num_scheduled_tokens = min(remaining, budget)
+            num_tokens += seq.num_scheduled_tokens
+            batch.append(seq)
+
+            # migrate to the decode queue only once the whole prompt is covered;
+            # a chunked prefill stays in self.waiting for its next pass
+            if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
+                seq.status = Status.RUNNING
+                seq.is_prefill = False
+                self.waiting.popleft()
+                self.running.append(seq)
+
+        if batch:
+            return batch, True
+
+        # decode
+        # only reached when prefill scheduled nothing, so the engine still makes
+        # progress while the waiting queue is blocked on memory
+        while self.running and len(batch) < self.max_seq:
+            seq = self.running.popleft()
+
+            # make room for this sequence's next block, evicting the newest
+            # running sequences first. already-batched sequences are out of
+            # self.running right now, so they can never be chosen as victims
+            while not self.block_manager.can_append(seq):
+                if self.running:
+                    self.preempt(self.running.pop())
+                else:
+                    self.preempt(seq)       # nothing left to evict but myself
+                    seq = None
                     break
 
-                # calculate num scheduled tokens
-                remaining = seq.num_tokens - seq.num_cached_tokens
-                budget = self.max_tokens_per_batch - num_tokens
+            if seq is None:
+                break
 
-                num_scheduled = min(remaining, budget)
-                seq.num_scheduled_tokens = num_scheduled
+            self.block_manager.try_append(seq)
+            seq.num_scheduled_tokens = 1
+            seq.is_prefill = False
+            num_tokens += seq.num_scheduled_tokens
+            batch.append(seq)
 
-                num_tokens += seq.num_scheduled_tokens
-                batch.append(seq)
+        # put the scheduled sequences back at the front in preserved order
+        self.running.extendleft(reversed(batch))
 
-                # only append to running if not chunked prefill, if chunked prefill, keep in waiting
-                if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
-                    seq.status = Status.RUNNING 
-                    self.waiting.popleft() 
-                    self.running.append(seq)
+        return batch, False
 
-        # construct a decode batch
-        else:
-            prefill = False
-            while (len(batch) < self.max_seq and num_tokens < self.max_tokens_per_batch):
-                seq = self.running.popleft()
-                if self.block_manager.can_append(seq):
-                    self.block_manager.try_append(seq)
-                    self.running.popleft()
-                    num_tokens += seq.num_scheduled_tokens
-                    batch.append(seq)
-                    self.running.append(seq)
-
-                    seq.num_scheduled_tokens = 1
-                else:
-                    # preempt running seq if not enough space for a decode
-                    self.preempt(seq)
-                    self.running.append(seq)
-                    continue
-
-        return batch, prefill
-            
 
     """
     preempt() removes from the running (decode) queue to free up space for more prefills
@@ -92,15 +119,17 @@ class Scheduler:
     postprocess() runs after every step of LLM Engine (each run batch)
     token_ids is a list of generated tokens, 1 per seq scheduled
     """
-    def postprocess(self, seqs : list[Sequence], token_ids: list[int], is_prefill : bool):
+    def postprocess(self, seqs : list[Sequence], token_ids: list[int]):
         for seq, token_id in zip(seqs, token_ids):
             self.block_manager.publish_blocks(seq)
             seq.num_cached_tokens += seq.num_scheduled_tokens
             seq.num_scheduled_tokens = 0
 
-            # check for chunked prefill, stop once reaching end
-            # do so before appending, because this result will be garbage for chunked prefill
-            if is_prefill and seq.num_cached_tokens < seq.num_tokens:
+            # a sequence still mid-prefill sampled its token from a mid-prompt
+            # logit, which predicts a token already in the prompt. discard it.
+            # schedule() clears is_prefill on the pass that finishes the prompt,
+            # so this is per-sequence rather than per-batch
+            if seq.is_prefill:
                 continue
 
             seq.append_token(token_id)
