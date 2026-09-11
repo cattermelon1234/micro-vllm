@@ -22,7 +22,7 @@ class Scheduler:
     schedules and creates a batch of either waiting or running sequences
     """
     def schedule(self) -> tuple[list[Sequence], bool]:
-        if self.is_finished:
+        if self.is_finished():
             return ([], False)
         num_tokens = 0
         batch : list[Sequence] = []
@@ -36,11 +36,10 @@ class Scheduler:
                     victim = self.running.pop()
                     self.preempt(victim)
 
-                self.block_manager.allocate(seq)
-                self.waiting.popleft()
-                num_tokens += seq.num_tokens
-                batch.append(seq)
-                self.running.append(seq)
+                cached_tokens = self.block_manager.allocate(seq)
+
+                if cached_tokens == -1:
+                    break
 
                 # calculate num scheduled tokens
                 remaining = seq.num_tokens - seq.num_cached_tokens
@@ -49,15 +48,24 @@ class Scheduler:
                 num_scheduled = min(remaining, budget)
                 seq.num_scheduled_tokens = num_scheduled
 
+                num_tokens += seq.num_scheduled_tokens
+                batch.append(seq)
+
+                # only append to running if not chunked prefill, if chunked prefill, keep in waiting
+                if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
+                    seq.status = Status.RUNNING 
+                    self.waiting.popleft() 
+                    self.running.append(seq)
+
         # construct a decode batch
         else:
-            prefill = True
+            prefill = False
             while (len(batch) < self.max_seq and num_tokens < self.max_tokens_per_batch):
-                seq = self.running[0]
+                seq = self.running.popleft()
                 if self.block_manager.can_append(seq):
                     self.block_manager.try_append(seq)
                     self.running.popleft()
-                    num_tokens += seq.num_tokens
+                    num_tokens += seq.num_scheduled_tokens
                     batch.append(seq)
                     self.running.append(seq)
 
@@ -65,6 +73,7 @@ class Scheduler:
                 else:
                     # preempt running seq if not enough space for a decode
                     self.preempt(seq)
+                    self.running.append(seq)
                     continue
 
         return batch, prefill
@@ -81,21 +90,25 @@ class Scheduler:
 
     """
     postprocess() runs after every step of LLM Engine (each run batch)
+    token_ids is a list of generated tokens, 1 per seq scheduled
     """
-    def postprocess(self, seqs : list[Sequence], is_prefill : bool):
-        for seq in seqs:
-            # check for chunked prefill, (don't publish kv since incomplete)
+    def postprocess(self, seqs : list[Sequence], token_ids: list[int], is_prefill : bool):
+        for seq, token_id in zip(seqs, token_ids):
+            self.block_manager.publish_blocks(seq)
+            seq.num_cached_tokens += seq.num_scheduled_tokens
+            seq.num_scheduled_tokens = 0
+
+            # check for chunked prefill, stop once reaching end
+            # do so before appending, because this result will be garbage for chunked prefill
             if is_prefill and seq.num_cached_tokens < seq.num_tokens:
                 continue
 
-            self.block_manager.publish_blocks(seq)
-            seq.num_cached_tokens += seq.num_scheduled_tokens
+            seq.append_token(token_id)
 
-            if (not seq.ignore_eos and seq.last_token == self.eos) or seq.num_completion_tokens() == seq.max_tokens:
-                seq.status = Status.FINISHED
-                self.block_manager.deallocate(seq)
-                self.running.remove(seq)
-            seq.num_scheduled_tokens = 0
-
+            if (not seq.ignore_eos and token_id == self.eos) or \
+                       seq.num_completion_tokens() == seq.max_tokens:
+                        seq.status = Status.FINISHED
+                        self.block_manager.deallocate(seq)
+                        self.running.remove(seq)
 
 
