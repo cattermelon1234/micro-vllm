@@ -129,3 +129,20 @@ class BlockManager:
                 seq.block_table.append(self.alloc_block())
 
         # otherwise, we don't really need to do anything (just appending to same block)
+
+    def publish_blocks(self, seq: Sequence):
+        start = seq.num_cached_tokens // self.block_size 
+        end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size 
+        if start == end:
+            return 
+
+        h = -1
+        if start > 0:
+            h = self.block_list[seq.block_table[start - 1]].hash
+
+        for i in range(start, end):
+            block_id = seq.block_table[i]
+            block = self.block_list[block_id]
+            block.assign(h, seq.block(i))
+            self.prefix_cache[block.hash] = block_id
+            h = block.hash
