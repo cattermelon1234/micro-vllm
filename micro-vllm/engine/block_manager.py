@@ -99,13 +99,27 @@ class BlockManager:
         seq.block_table = []
 
     def can_append(self, seq: Sequence):
-        needs_block = seq.num_tokens % self.block_size == 1
-        return len(self.free_blocks) >= (1 if needs_block else 0)
+        needs_block = seq.num_tokens % self.block_size == 1    # 0 if no blocks needed, 1 if needed
+        return len(self.free_blocks) >= (1 if needs_block else 0)    # return true/false if enough free blocks
 
-    def may_append(self, seq: Sequence):
-        if seq.num_tokens % self.block_size == 1:
-            seq.block_table.append(self.alloc_block())
+    def try_append(self, seq: Sequence):
+        # Current block just became full
+        if seq.num_tokens % self.block_size == 0:
+            logical_idx = seq.num_tokens // self.block_size - 1
+            block_id = seq.block_table[logical_idx]
 
+            token_ids = seq.block(logical_idx)
+
+            if logical_idx == 0:
+                prev_hash = -1
+            else:
+                prev_block_id = seq.block_table[logical_idx - 1]
+                prev_hash = self.block_list[prev_block_id].hash
+
+            block = self.block_list[block_id]
+            block.assign(prev_hash, token_ids)
+
+            self.prefix_cache[block.hash] = block_id
 
 
 
