@@ -102,6 +102,10 @@ class BlockManager:
         needs_block = seq.num_tokens % self.block_size == 1
         return len(self.free_blocks) >= (1 if needs_block else 0)
 
+    def may_append(self, seq: Sequence):
+        if seq.num_tokens % self.block_size == 1:
+            seq.block_table.append(self.alloc_block())
+
 
 
 
