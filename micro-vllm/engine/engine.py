@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from scheduler import Scheduler
 from sequence import Sequence
-from 
 
 
 @dataclass
@@ -39,9 +38,10 @@ class LLMEngine:
     def add_request(self, prompt, sampling_params):
         """prompt: list[int], or str if a tokenizer was supplied."""
         if isinstance(prompt, str):
+            if self.tokenizer is None:
+                raise ValueError("String prompts require a tokenizer")
             prompt = self.tokenizer.encode(prompt)
-        # TODO: sequence.py must take sampling_params as an argument first
-        self.scheduler.add(Sequence(prompt))
+                self.scheduler.add(Sequence(prompt, sampling_params))
 
     def is_finished(self):
         return self.scheduler.is_finished()

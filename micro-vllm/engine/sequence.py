@@ -11,7 +11,7 @@ class Sequence:
     block_size = 256
     next_id = count()
 
-    def __init__(self, token_ids: list[int]):
+    def __init__(self, token_ids: list[int], sampling_params):
         self.seq_id = next(Sequence.next_id)  
         self.status = Status.WAITING
         self.token_ids = copy(token_ids)
