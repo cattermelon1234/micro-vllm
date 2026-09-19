@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from scheduler import Scheduler
 from sequence import Sequence
+from 
 
 
 @dataclass
@@ -40,7 +41,7 @@ class LLMEngine:
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
         # TODO: sequence.py must take sampling_params as an argument first
-        self.scheduler.add(Sequence(prompt, sampling_params))
+        self.scheduler.add(Sequence(prompt))
 
     def is_finished(self):
         return self.scheduler.is_finished()
