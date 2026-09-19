@@ -45,7 +45,7 @@ class Sequence:
 
     def block(self, i):
         start = i * self.block_size 
-        return self.token_ids[start : (start + self.block_size) % self.max_tokens]
+        return self.token_ids[start : start + self.block_size]
 
     def last_block_num_tokens(self):
         return self.num_tokens - (self.num_blocks() - 1) * self.block_size
