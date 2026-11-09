@@ -1,6 +1,13 @@
-from collections import deque 
-from sequence import Sequence, Status
-from block_manager import BlockManager
+from __future__ import annotations
+
+from collections import deque
+from typing import TYPE_CHECKING
+
+from .sequence import Sequence, Status
+from .block_manager import BlockManager
+
+if TYPE_CHECKING:
+    from .engine import Config
 
 class Scheduler: 
     def __init__(self, config : Config):
@@ -77,7 +84,7 @@ class Scheduler:
         # decode
         # only reached when prefill scheduled nothing, so the engine still makes
         # progress while the waiting queue is blocked on memory
-        while self.running and len(batch) < self.max_seq:
+        while self.running and len(batch) < min(self.max_seq, self.max_tokens_per_batch):
             seq = self.running.popleft()
 
             # make room for this sequence's next block, evicting the newest

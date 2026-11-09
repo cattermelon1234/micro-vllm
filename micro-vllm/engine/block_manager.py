@@ -1,5 +1,5 @@
 from collections import deque
-from sequence import Sequence
+from .sequence import Sequence
 
 class Block:
     def __init__ (self, block_id : int):
@@ -103,15 +103,13 @@ class BlockManager:
         seq.block_table = []
 
     def can_append(self, seq: Sequence):
-        needs_block = seq.num_tokens % self.block_size == 1    # 0 if no blocks needed, 1 if needed
+        needs_block = len(seq.block_table) < seq.num_blocks()
         return len(self.free_blocks) >= (1 if needs_block else 0)    # return true/false if enough free blocks
 
     def try_append(self, seq: Sequence):
         # If we've just started a new block, allocate space for it.
-        if seq.num_tokens % self.block_size == 1:
-            # only if allocate() hasn't already provided this block
-            if len(seq.block_table) < seq.num_blocks():
-                seq.block_table.append(self.alloc_block())
+        if len(seq.block_table) < seq.num_blocks():
+            seq.block_table.append(self.alloc_block())
 
         # otherwise, we don't really need to do anything (just appending to same block)
 

@@ -12,6 +12,8 @@ class Sequence:
     next_id = count()
 
     def __init__(self, token_ids: list[int], sampling_params):
+        if not token_ids:
+            raise ValueError("A sequence requires a nonempty prompt")
         self.seq_id = next(Sequence.next_id)  
         self.status = Status.WAITING
         self.token_ids = copy(token_ids)

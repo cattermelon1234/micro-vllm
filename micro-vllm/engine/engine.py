@@ -7,8 +7,8 @@ Everything it does is glue; all the decisions live one layer down.
 """
 from dataclasses import dataclass
 
-from scheduler import Scheduler
-from sequence import Sequence
+from .scheduler import Scheduler
+from .sequence import Sequence
 
 
 @dataclass
@@ -18,9 +18,14 @@ class Config:
     max_tokens_per_batch: int = 4096      # token budget per forward pass
     # kv cache
     block_size: int = 256                 # tokens per block
-    num_blocks: int = 128                 # set by ModelRunner once it measures free memory
+    num_blocks: int = 128                 # explicit pool size; no memory profiling yet
     # model
     eos: int = -1                         # filled in from the tokenizer
+
+    def __post_init__(self):
+        for name in ("max_seq", "max_tokens_per_batch", "block_size", "num_blocks"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
 
 
 class LLMEngine:
@@ -41,7 +46,7 @@ class LLMEngine:
             if self.tokenizer is None:
                 raise ValueError("String prompts require a tokenizer")
             prompt = self.tokenizer.encode(prompt)
-                self.scheduler.add(Sequence(prompt, sampling_params))
+        self.scheduler.add(Sequence(prompt, sampling_params))
 
     def is_finished(self):
         return self.scheduler.is_finished()
@@ -50,6 +55,8 @@ class LLMEngine:
         """One forward pass. Returns (seq_id, completion_token_ids) for finished seqs."""
         seqs, is_prefill = self.scheduler.schedule()
         if not seqs:
+            if not self.scheduler.is_finished():
+                raise RuntimeError("No runnable batch; a sequence may exceed KV cache capacity")
             return []
 
         # the model runner flattens seqs into tensors, runs the model, and
